@@ -831,6 +831,18 @@ The same issue for underflow is already resolved by using `closable` and enforci
 - can not break utilization
 - for local position - calculate maxMagnitude amount from `settled + local openable` instead of absolute pending position values for margined/maintained calculations.
 
+
+
+## Discussion
+
+**kbrizzle**
+
+Invariant bricking issue resolved via: https://github.com/equilibria-xyz/perennial-v2/pull/155.
+
+Margin using the incorrect maximum pending position resolved by: https://github.com/equilibria-xyz/perennial-v2/pull/168.
+
+We chose to *not fix* the incorrect maximum `makerLimit` issue due to the complexity involved in implementing the above pending open calculation on the **global** pending positions compared to its relatively low severity since the error on the limit is capped. We will make a note of this property for parameter tuning, especially for markets with expected invalid versions.
+
 # Issue M-4: `KeeperOracle.request` adds only the first pair of market+account addresses per oracle version to callback list, ignoring all the subsequent ones 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/25 
@@ -1495,6 +1507,12 @@ add (pending-latest) = (20-10) to closable (`closable` = 20)
 
 Note on fix: we will be removing the liquidation action from the MultiInvoker in another fix (as it will be unnecessary). we may or may not fix the vault side of the issue, since as you've laid out, it has minimal downside.
 
+**kbrizzle**
+
+
+- `MultiInvoker` - Resolved as a side-effect of: https://github.com/equilibria-xyz/perennial-v2/pull/165.
+- `Vault` - Won't fix due to the amount of additional complexity required, considering the low severity and expedient self-resolution.
+
 # Issue M-10: Settlement fee of unused markets is still charged in Vault 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/33 
@@ -1736,6 +1754,10 @@ Manual Review
 **nevillehuang**
 
 @kbrizzle @arjun-io could you kindly review this issue too?
+
+**kbrizzle**
+
+Resolved as a side effect of: https://github.com/equilibria-xyz/perennial-v2/pull/165. (Deprecation of the `Liquidate` action from the `MultiInvoker`)
 
 # Issue M-12: interfaceFee Incorrectly converted  uint40 when stored 
 
