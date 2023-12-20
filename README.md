@@ -179,6 +179,12 @@ if (protected && (
 
 Resolved via: https://github.com/equilibria-xyz/perennial-v2/pull/149.
 
+**panprog**
+
+Mitigation Review:
+
+Fixed
+
 # Issue H-2: Vault leverage can be increased to any value up to min margin requirement due to incorrect `maxRedeem` calculations with closable and `LEVERAGE_BUFFER` 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/7 
@@ -429,6 +435,20 @@ This was patched in our v2.0 deployment via https://github.com/equilibria-xyz/pe
 
 We will follow up with the v2.1 fix as well, since it's materially different.
 
+**panprog**
+
+Mitigation Review:
+
+While this one is fixed (LEVERAGE_BUFFER removed), the fix itself is still with issues, see #29 for details.
+
+**panprog**
+
+As #29 is fully fixed now, this one is also fixed
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/170
+
 # Issue H-3: Vault max redeem calculations limit redeem amount to the smallest position size in underlying markets which can lead to very small max redeem amount even with huge TVL vault 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/29 
@@ -485,6 +505,58 @@ Manual Review
 ## Recommendation
 
 Consider calculating max redeem by comparing target position vs current position and then target collateral vs current collateral instead of using only current position for calculations. This might be somewhat complex, because it will require to re-calculate allocation amounts to compare target vs current position. Possibly max redeem should not be limited as a separate check, but rather as part of the `allocate()` calculations (reverting if the actual leverage is too high in the end)
+
+
+
+## Discussion
+
+**panprog**
+
+Mitigation Review:
+
+**Not fully fixed**. There is still possibility to put the vault at max leverage. This happens when leverage is smaller than target leverage (for example, maker has accumulated some profit). The scenario is as following:
+1. Vault leverage in market = 2
+2. Deposit 40 (assets = 40, position opened = 80)
+3. After some time maker has accumulated a profit of 10, so vault has assets = 50, position opened = 80
+4. Say, market has net position opened = 20, meaning min position = 80 - (80 - 20) = 20
+5. MaxRedeem returns MAX, meaning user is allowed to withdraw all assets, but position will be reduced to 20 instead of 0, meaning vault will be at incorrect leverage.
+
+This happens because of these lines:
+```solidity
+(UFixed6 minPosition, ) = _positionLimit(marketContext);
+UFixed6 availableClosable = targets[marketId].position.unsafeSub(minPosition);
+
+if (availableClosable.gte(marketContext.currentAccountPosition.maker)) continue;        // entire position can be closed, don't limit in cases of price deviation
+```
+
+- `minPosition` = 20 (market maker = 80, net = 20, closable = 80)
+- `target.position` = 100 (assets = 50)
+- `availableClosable` = target - min = 80
+- `currentAccountPosition.maker` = 80
+
+The `if` statement is `true` (80 >= 80) thus user is allowed to redeem all assets. However, `minPosition` will still be limited to 20.
+
+**Possible fix**
+
+The main logic appears to be correct, the problem is with the `if` statement - the `currentAccountPosition` doesn't provide any info about collateral, thus it's not correct to allow unlimited withdrawal based on this value - when there are more assets than current position suggests (due to decreased leverage), the limit from `availableClosable` should still apply (because it's possible to redeem more assets than assets derived from current position and leverage).
+
+One possiblity is just to remove that `if` statement, it will then return incorrect (higher than vault assets) values sometimes, but it will not cause any problems anyway, because it will revert with underflow when trying to subtract more than total shares.
+
+Another possibility is to use available market's vault collateral adjusted for leverage instead of current position, but I can't quickly determine if that'll be enough or not, as it will require additional research/time.
+
+**kbrizzle**
+
+So we do need this if statement in general - without it, slight price deviations version-to-version can cause the amount that is calculated to slightly undershoot. This isn't really a problem if the position can't be fully closed, but when it can, this prevents the user from being able to fully withdraw.
+
+I was able to find a really clean solution to this though, essentially directly checking if we can fully close now that we have that information: https://github.com/equilibria-xyz/perennial-v2/pull/191.
+
+**panprog**
+
+Great solution! This is fixed now.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/173
 
 # Issue H-4: Attacker can call `KeeperFactory#settle` with empty arrays as input parameters to steal all keeper fees 
 
@@ -631,6 +703,16 @@ function settle(
 
 We might consider this a High due to the fact that draining the oracle fee could brick markets pretty quickly (potentially in 1 tx)
 
+**panprog**
+
+Mitigation Review:
+
+Fixed.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/167
+
 # Issue M-1: MultiInvoker doesn't pay keepers refund for l1 calldata 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/22 
@@ -707,6 +789,16 @@ This is actually valid and something we've recently patched in our live v2.0 dep
 
 The supplied fee in the trigger order is only a "max fee", but the paid out fee is calculated at time of execution.
 
+**panprog**
+
+Mitigation Review:
+
+Fixed. A thing to note is that for Optimism, there should MultiInvoker_Optimism and for all the other L2 networks as well.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/151
+
 # Issue M-2: It is possible to open and liquidate your own position in 1 transaction to overcome efficiency and liquidity removal limits at almost no cost 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/23 
@@ -767,6 +859,20 @@ Manual Review
 ## Recommendation
 
 If collateral is withdrawn or order increases position, verify `maxPendingMagnitude` with `margined` amount. If position is reduced or remains unchanged AND collateral is not withdrawn, only then `maxPendingMagnitude` can be verified with `maintained` amount.
+
+
+
+## Discussion
+
+**panprog**
+
+Mitigation Review:
+
+Fixed. Maintained is now only used for liquidation, all account changes perform margined check, making it impossible to change position and self-liquidate in 1 transaction.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/168
 
 # Issue M-3: Invalid oracle version can cause the `maker` position to exceed `makerLimit`, temporarily or permanently bricking the Market contract 
 
@@ -843,6 +949,18 @@ Margin using the incorrect maximum pending position resolved by: https://github.
 
 We chose to *not fix* the incorrect maximum `makerLimit` issue due to the complexity involved in implementing the above pending open calculation on the **global** pending positions compared to its relatively low severity since the error on the limit is capped. We will make a note of this property for parameter tuning, especially for markets with expected invalid versions.
 
+**panprog**
+
+Mitigation Review:
+
+Bricking - Fixed. Only orders increasing maker will now revert when maker is over the limit.
+
+Exceeding maker limit - Still possible (acknowledged). It's possible to exceed maker limit by at most 2x and is unlikely to happen (needs invalid oracle version and specific pattern of maker changes).
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/168
+
 # Issue M-4: `KeeperOracle.request` adds only the first pair of market+account addresses per oracle version to callback list, ignoring all the subsequent ones 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/25 
@@ -911,6 +1029,20 @@ function request(IMarket market, address account) external onlyAuthorized {
     emit OracleProviderVersionRequested(currentTimestamp);
 }
 ```
+
+
+
+## Discussion
+
+**panprog**
+
+Mitigation Review:
+
+Fixed
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/164
 
 # Issue M-5: `KeeperOracle.commit` will revert and won't work for all markets if any single `Market` is paused. 
 
@@ -1178,6 +1310,74 @@ function _maxDeposit(Context memory context) private view returns (UFixed6) {
 }
 ```
 
+
+
+## Discussion
+
+**panprog**
+
+Mitigation Review:
+
+While it's not possible to exceed vault deposit cap now, the opposite problem has now appeared: any user can block all further deposits by depositing, redeeming, but not claiming the assets. This will block the vault from any further deposits while vault position can be very small due to such user not claiming redeemed assets.
+
+Depending on project intended behavior, this might be expected (limit amount of collateral deposited, rather than vault position in underlying market), but it still looks somewhat incorrect and makes it easy to severely limit vault intended functionality (providing liquidity for the underlying markets): malicious user can keep the other users from depositing while not providing any liquidity at all.
+
+**kbrizzle**
+
+Here's the formula we tried to implement (note that it is different than the one that was proposed as a recommend fix):
+
+```
+totalAssets() = collateral (amount) - deposit - totalClaim
+
+collateral (variable) = totalAssets() + deposit -> collateral (amount) - totalClaim
+maxDeposit = cap - collateral (variable) -> cap - (collateral (amount) - totalClaim)
+```
+
+This should take into account the issue you have raised, where idle totalClaim is not counted towards the deposited amount of the vault. Lemme if you see something wrong there or with the implementation.
+
+**panprog**
+
+@kbrizzle 
+I think totalAssets() doesn't subtract totalClaim - it includes totalClaim. At least I haven't seen any changes in totalAsset() calculations since contest code, where my POC confirms that totalAssets() includes totalClaim. Currently it returns:
+
+```solidity
+    function totalAssets() public view returns (Fixed6) {
+        Checkpoint memory checkpoint = _checkpoints[_accounts[address(0)].read().latest].read();
+        return checkpoint.assets
+            .add(Fixed6Lib.from(checkpoint.deposit))
+            .sub(Fixed6Lib.from(checkpoint.toAssetsGlobal(checkpoint.redemption)));
+    }
+```
+
+So it's checkpoint assets (which includes assets which are redeemed but not claimed yet) + deposits - redemptions. Redemptions != claims, it's different.
+
+If you still think this is correct, I'll need more time to verify how checkpoint assets are calculated and craft a POC to demonstrate it.
+
+**kbrizzle**
+
+The totalClaim is actually being taken out as part of the checkpoint process itself, not within `totalAssets()`.
+
+The Checkpoint lifecycle works as follows:
+ 1. [`initialize()`](https://github.com/equilibria-xyz/perennial-v2/blob/main/packages/perennial-vault/contracts/types/Checkpoint.sol#L55) is called when a new underlying version mapping is requested for the first time.
+ 2. `checkpoint.assets` is initialized as `- (total pending deposits + total pending claims)` [here](https://github.com/equilibria-xyz/perennial-v2/blob/main/packages/perennial-vault/contracts/types/Checkpoint.sol#L58).
+ 3. Later, once the mapping is [`.ready()`](https://github.com/equilibria-xyz/perennial-v2/blob/main/packages/perennial-vault/contracts/Vault.sol#L349), the checkpoint is [`completed()`](https://github.com/equilibria-xyz/perennial-v2/blob/main/packages/perennial-vault/contracts/types/Checkpoint.sol#L77).
+ 4. This completes `checkpoint.assets` as `total collateral at version - (total pending deposits + total pending claims)`, which is our expected formula.
+
+Now note that the actual code within `totalAssets()` is just translating the assets amount from "just before the version snapshot" to "at the version snapshot including its deposits and redemptions".
+
+Additionally, I've added a [test case](https://github.com/equilibria-xyz/perennial-v2/pull/193) to ensure that `totalClaim()` is not being included at least in the novel case.
+
+**panprog**
+
+@kbrizzle 
+Yes, you're right. I've confused checkpoint assets and global assets. Sorry for raising up non-existant issue.
+
+This one is fixed then. My remark on the issue is invalid.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/172
+
 # Issue M-7: Pending keeper and position fees are not accounted for in vault collateral calculation which can be abused to liquidate vault when it's small 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/28 
@@ -1255,6 +1455,20 @@ Manual Review
 ## Recommendation
 
 Consider subtracting pending fees when loading underlying markets data context in the vault.
+
+
+
+## Discussion
+
+**panprog**
+
+Mitigation Review:
+
+Fixed
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/176
 
 # Issue M-8: `MultiInvoker._latest` will return `latestPrice = 0` when latest oracle version is invalid causing liquidation to send 0 fee to liquidator or incorrect order execution 
 
@@ -1372,6 +1586,23 @@ Manual Review
 - if the latest oracle version is valid, then use its price
 - if the latest oracle version is invalid, then iterate all global pending positions backwards and use price of any valid oracle version at the position.
 - if all pending positions are at invalid oracles, use market's `global.latestPrice`
+
+
+
+## Discussion
+
+**panprog**
+
+Mitigation Review:
+
+Fixed.
+
+- Liquidation now removed from MultiInvoker
+- Order can not be executed for invalid version. This is still not optimal, because it should be possible to directly execute the order even when latest oracle version is invalid (using previous valid oracle price), but MultiInvoker will revert. However, this is low/info.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/166
 
 # Issue M-9: `MultiInvoker._latest` calculates incorrect closable for the current oracle version causing some liquidations to revert 
 
@@ -1759,6 +1990,12 @@ Manual Review
 
 Resolved as a side effect of: https://github.com/equilibria-xyz/perennial-v2/pull/165. (Deprecation of the `Liquidate` action from the `MultiInvoker`)
 
+**panprog**
+
+Mitigation Review:
+
+Fixed. Calculation of previousMagnitude and closable is no longer necessary as there is no liquidation action in MultiInvoker anymore.
+
 # Issue M-12: interfaceFee Incorrectly converted  uint40 when stored 
 
 Source: https://github.com/sherlock-audit/2023-10-perennial-judging/issues/43 
@@ -1874,6 +2111,16 @@ library TriggerOrderLib {
 > medium, because there seems to really be an incorrect cast to uint40 instead of uint48, so the fee might be stored incorrectly and incorrect (smaller) fee will be charged, losing funds for the interface
 
 
+
+**panprog**
+
+Mitigation Review:
+
+Fixed.
+
+**MLON33**
+
+Fix: https://github.com/equilibria-xyz/perennial-v2/pull/175
 
 # Issue M-13: vault.claimReward() If have a market without reward token, it may cause all markets to be unable to retrieve rewards. 
 
